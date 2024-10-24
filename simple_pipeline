@@ -1,0 +1,211 @@
+# File: simple_pipeline.py
+# KAFKA ON KAFKA!!!!
+import json
+import threading
+import time
+from datetime import datetime
+import re
+from textblob import TextBlob # type: ignore
+import dash # type: ignore
+from dash import html, dcc # type: ignore
+from dash.dependencies import Input, Output # type: ignore
+import plotly.graph_objects as go # type: ignore
+import pandas as pd # type: ignore
+from collections import deque
+
+class DataCleaner:
+    @staticmethod
+    def clean_review(review):
+        """Clean and validate review data"""
+        try:
+            # Remove special characters
+            text = re.sub(r'[^\w\s]', '', review['text'])
+            
+            # Basic validation
+            if len(text.split()) < 3:
+                return None
+                
+            # Normalize rating
+            rating = float(review.get('rating', '0'))
+            if not (0 <= rating <= 5):
+                rating = 0
+                
+            return {
+                'text': text,
+                'rating': rating,
+                'date': review.get('date', datetime.now().strftime('%Y-%m-%d')),
+                'timestamp': review.get('timestamp', datetime.now().isoformat()),
+                'validation_status': 'valid'
+            }
+        except Exception as e:
+            print(f"Cleaning error: {e}")
+            return None
+
+class SentimentAnalyzer:
+    def analyze_sentiment(self, text):
+        """Simple sentiment analysis using TextBlob"""
+        blob = TextBlob(text)
+        return {
+            'sentiment_score': blob.sentiment.polarity,
+            'subjectivity': blob.sentiment.subjectivity
+        }
+
+class ReviewVisualizer:
+    def create_sentiment_timeline(self, reviews_df):
+        """Create interactive sentiment timeline"""
+        fig = go.Figure()
+        
+        # Add sentiment line
+        fig.add_trace(go.Scatter(
+            x=reviews_df['date'],
+            y=reviews_df['sentiment_score'],
+            mode='lines+markers',
+            name='Sentiment Score'
+        ))
+        
+        # Add rating line
+        fig.add_trace(go.Scatter(
+            x=reviews_df['date'],
+            y=reviews_df['rating'],
+            mode='lines+markers',
+            name='Rating'
+        ))
+        
+        fig.update_layout(
+            title='Review Sentiment and Rating Timeline',
+            xaxis_title='Date',
+            yaxis_title='Score',
+            hovermode='x unified'
+        )
+        
+        return fig
+
+class GoodreadsAnalysisPipeline:
+    def __init__(self):
+        self.data_cleaner = DataCleaner()
+        self.sentiment_analyzer = SentimentAnalyzer()
+        self.visualizer = ReviewVisualizer()
+        self.reviews_buffer = deque(maxlen=100)  # Store last 100 reviews
+        self.running = True
+        
+        # Add some sample data
+        sample_reviews = [
+            {
+                'text': 'This book was amazing! Loved every page.',
+                'rating': 5,
+                'date': '2024-01-01'
+            },
+            {
+                'text': 'Decent read but a bit slow in the middle.',
+                'rating': 3,
+                'date': '2024-01-02'
+            },
+            {
+                'text': 'Could not finish it. Very disappointing.',
+                'rating': 1,
+                'date': '2024-01-03'
+            }
+        ]
+        
+        for review in sample_reviews:
+            self.process_review(review)
+
+    def process_review(self, review):
+        """Process a single review"""
+        # Clean the review
+        cleaned_review = self.data_cleaner.clean_review(review)
+        if cleaned_review:
+            # Analyze sentiment
+            sentiment_results = self.sentiment_analyzer.analyze_sentiment(cleaned_review['text'])
+            # Combine results
+            analyzed_review = {**cleaned_review, **sentiment_results}
+            # Store in buffer
+            self.reviews_buffer.append(analyzed_review)
+
+    def setup_dashboard(self):
+        """Initialize Dash dashboard"""
+        app = dash.Dash(__name__)
+        
+        app.layout = html.Div([
+            html.H1('Goodreads Review Analysis Dashboard'),
+            
+            html.Div([
+                html.H3('Add New Review'),
+                dcc.Input(
+                    id='review-text',
+                    type='text',
+                    placeholder='Enter review text...',
+                    style={'width': '60%', 'margin-right': '10px'}
+                ),
+                dcc.Input(
+                    id='review-rating',
+                    type='number',
+                    placeholder='Rating (1-5)',
+                    min=1,
+                    max=5,
+                    style={'width': '100px', 'margin-right': '10px'}
+                ),
+                html.Button('Submit', id='submit-review', n_clicks=0)
+            ], style={'margin': '20px 0'}),
+            
+            dcc.Graph(id='sentiment-timeline'),
+            
+            dcc.Interval(
+                id='interval-component',
+                interval=2*1000,  # Update every 2 seconds
+                n_intervals=0
+            )
+        ])
+        
+        @app.callback(
+            Output('sentiment-timeline', 'figure'),
+            [Input('interval-component', 'n_intervals'),
+             Input('submit-review', 'n_clicks')],
+            [dash.dependencies.State('review-text', 'value'),
+             dash.dependencies.State('review-rating', 'value')]
+        )
+        def update_graphs(n, clicks, review_text, rating):
+            if review_text and rating:
+                new_review = {
+                    'text': review_text,
+                    'rating': rating,
+                    'date': datetime.now().strftime('%Y-%m-%d')
+                }
+                self.process_review(new_review)
+            
+            # Convert buffer to DataFrame
+            df = pd.DataFrame(list(self.reviews_buffer))
+            if not df.empty:
+                df['date'] = pd.to_datetime(df['date'])
+                return self.visualizer.create_sentiment_timeline(df)
+            return go.Figure()
+        
+        return app
+
+    def run(self):
+        """Main execution method"""
+        # Start dashboard
+        app = self.setup_dashboard()
+        app.run_server(debug=False)
+
+if __name__ == "__main__":
+    # Install required packages if not already installed
+    import subprocess
+    import sys
+
+    required_packages = ['dash', 'pandas', 'plotly', 'textblob']
+    
+    def install_packages():
+        for package in required_packages:
+            try:
+                __import__(package)
+            except ImportError:
+                print(f"Installing {package}...")
+                subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+
+    print("Checking and installing required packages...")
+    install_packages()
+    print("Starting Goodreads Analysis Pipeline...")
+    
+    pipeline = GoodreadsAnalysisPipeline()
+    pipeline.run()
